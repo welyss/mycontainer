@@ -1,0 +1,68 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: dba
+spec:
+  ports:
+  - port: 3306
+  selector:
+    app: mysql-restore
+  type: NodePort
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: mysql-restore
+  namespace: dba
+spec:
+  selector:
+    matchLabels:
+      app: mysql-restore
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: mysql-restore
+    spec:
+      containers:
+      - image: registry.dev.hbec.com/dba/mysql-restore:0.1
+        name: mysql-restore
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-restore
+              key: rootpassword
+        - name: BACKUP_DOWNLOAD_FULL_URL
+          valueFrom:
+            configMapKeyRef:
+              name: mysql-restore
+              key: BACKUP_DOWNLOAD_FULL_URL
+        - name: BACKUP_DOWNLOAD_INC_URL
+          valueFrom:
+            configMapKeyRef:
+              name: mysql-restore
+              key: BACKUP_DOWNLOAD_INC_URL
+        ports:
+        - containerPort: 3306
+          name: mysql
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-restore
+  namespace: dba
+type: Opaque
+data:
+  rootpassword: MTIzMTIz
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-restore
+  namespace: dba
+data:
+  BACKUP_DOWNLOAD_FULL_URL: http://rdsbak-hangzhou-finance.oss-cn-hzfinance.aliyuncs.com/custins7481335/hins5079413_data_20180818093300.tar.gz?OSSAccessKeyId=LTAITfQ7krsrEwRn&Expires=1534902156&Signature=LbTMFe5QIBk6cYyoRrTjbhhCc4U%3D
+  BACKUP_DOWNLOAD_INC_URL:
