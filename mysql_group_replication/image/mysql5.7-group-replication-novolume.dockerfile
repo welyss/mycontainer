@@ -78,10 +78,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl jq iputils
 && rm -rf /var/lib/apt/lists/*
 
 COPY docker-entrypoint.sh /usr/local/bin/
-RUN chmod 775 /usr/local/bin/docker-entrypoint.sh
+RUN chmod 775 /usr/local/bin/docker-entrypoint.sh && chown mysql:mysql /usr/local/bin/docker-entrypoint.sh
 RUN ln -s /usr/local/bin/docker-entrypoint.sh /entrypoint.sh # backwards compat
 COPY report_status.sh /usr/local/bin/
-RUN chmod 775 /usr/local/bin/report_status.sh
+RUN chmod 775 /usr/local/bin/report_status.sh && chown mysql:mysql /usr/local/bin/report_status.sh
 RUN ln -s /usr/local/bin/report_status.sh /report_status.sh # backwards compat
 
 ENTRYPOINT ["docker-entrypoint.sh"]

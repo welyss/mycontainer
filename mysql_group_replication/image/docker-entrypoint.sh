@@ -61,7 +61,7 @@ _get_config() {
 _waiting_for_ready() {
 	local online=""
 	while [ -z $online ];do
-		online=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME")
+		online=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/nodes"|jq -r '.node.nodes[]|select(.value=="ONLINE").key'|sed 's/.*\///g')
 		sleep 1
 	done
 	echo $online|awk '{for(i=1;i<=NF;i++){ips=ips$i":33061";if(i<NF) ips=ips",";} print ips}'
@@ -73,6 +73,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 		DATADIR="$(_get_config 'datadir' "$@")"
 		mkdir -p "$DATADIR"
 		chown -R mysql:mysql "$DATADIR"
+		chown -R mysql:mysql /etc/mysql
 		exec gosu mysql "$BASH_SOURCE" "$@"
 fi
 
@@ -83,7 +84,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 		fi
 
 		if [ -z "$MYSQL_REPL_PASSWORD" ];then
-			MYSQL_REPL_PASSWORD = $MYSQL_ROOT_PASSWORD
+			MYSQL_REPL_PASSWORD=$MYSQL_ROOT_PASSWORD
 		fi
 
 		repluser="repl"
@@ -120,9 +121,16 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 		serverid=$(($(echo "$(echo $ipaddr|sed 's/\.//g')%4294967295")))
 		# initailize group replication options
 		cat >/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
+			[mysqld]
+			#Group Replication Requirements
 			server_id=$serverid
 			master_info_repository=TABLE
 			relay_log_info_repository=TABLE
+			binlog_checksum=none
+			log_slave_updates=on
+			log_bin=binlog
+			relay_log=relay-bin
+			binlog_format=row
 		EOF
 
 		# Get config
@@ -134,13 +142,6 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 				echo 'Initializing database'
 				"$@" --initialize-insecure
 				echo 'Database initialized'
-
-				if command -v mysql_ssl_rsa_setup > /dev/null && [ ! -e "$DATADIR/server-key.pem" ]; then
-						# https://github.com/mysql/mysql-server/blob/23032807537d8dd8ee4ec1c4d40f0633cd4e12f9/packaging/deb-in/extra/mysql-systemd-start#L81-L84
-						echo 'Initializing certificates'
-						mysql_ssl_rsa_setup --datadir="$DATADIR"
-						echo 'Certificates initialized'
-				fi
 
 				SOCKET="$(_get_config 'socket' "$@")"
 				"$@" --skip-networking --socket="${SOCKET}" &
@@ -194,6 +195,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 						GRANT REPLICATION SLAVE ON *.* TO 'rpl_user'@'%';
 						FLUSH PRIVILEGES ;
 						CHANGE MASTER TO MASTER_USER='rpl_user', MASTER_PASSWORD='${MYSQL_REPL_PASSWORD}' FOR CHANNEL 'group_replication_recovery';
+						INSTALL PLUGIN group_replication SONAME 'group_replication.so';
 				EOSQL
 
 				if [ ! -z "$MYSQL_ROOT_PASSWORD" ]; then
@@ -230,43 +232,77 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 						echo >&2 'MySQL init process failed.'
 						exit 1
 				fi
-
-				echo
-				echo 'MySQL init process done. Ready for start up.'
-				echo
 		fi
 
 		# check bootstrap_group
-		isbootstrap=$(curl -s http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/bootstrap?prevExist=false -XPUT -d value=$ipaddr|jq -r '.node.value')
-		if [ -z $isbootstrap ];then
+		isbootstrap=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/bootstrap?prevExist=false" -XPUT -d value=$ipaddr|jq -r '.node.value')
+		if [ "$isbootstrap" = null ];then
 			# cluster exists, find servers
+			isbootstrap=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/bootstrap"|jq -r '.node.value')
 			# check $isbootstrap alive
-			if ping -c 5 $isbootstrap;then
+			if ping -c 5 $isbootstrap && [ "$isbootstrap" != "$ipaddr" ];then
+				echo 'cluster exists and alive.'
 				online=$(_waiting_for_ready)
 				bootstrapgroup="off"
 			else
-				isbootstrap=$(curl -s http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/bootstrap?prevValue=$isbootstrap -XDELETE|jq -r '.node.value')
-				if [ -z $isbootstrap ];then
+				isbootstrap=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/bootstrap?prevValue=$isbootstrap" -XDELETE|jq -r '.node.key')
+				if [ "$isbootstrap" = null ];then
+					echo 'cluster exists and dead, delete old isbootstrap faild, we need waiting for others.'
 					bootstrapgroup="off"
+					online=$(_waiting_for_ready)
 				else
+					echo 'cluster exists and dead, delete old isbootstrap success, we will start as new bootstrap.'
+					curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/bootstrap?prevExist=false" -XPUT -d value=$ipaddr
 					bootstrapgroup="on"
 				fi
 			fi
 		else
 			# this is a new cluster
+			echo 'this is a new cluster.'
 			bootstrapgroup="on"
+		fi
+
+		if [ "$bootstrapgroup" = "on" ];then
+			online="$ipaddr:33061"
 		fi
 
 		# initailize group replication options
 		cat >>/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
-			group_replication_local_address=$ipaddr:33061
-			group_replication_group_seeds=$online
+			gtid_mode=on
+			enforce_gtid_consistency=on
+			transaction_write_set_extraction=XXHASH64
+			group_replication_local_address="$ipaddr:33061"
+			group_replication_group_seeds="$online"
 			group_replication_start_on_boot=on
 			group_replication_bootstrap_group=$bootstrapgroup
+			report_host=$ipaddr
+		EOF
+
+		cat >>/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
+			expire_logs_days=3
+			group_replication_group_name="70155729-a504-11e8-9740-00ff8601922c"
+			group_replication_single_primary_mode=off
+			group_replication_enforce_update_everywhere_checks=on
+
+			#Group Replication Requirements optimize
+			slave_parallel_workers=8
+			slave_preserve_commit_order=1
+			slave_parallel_type=LOGICAL_CLOCK
+			binlog_transaction_dependency_tracking=WRITESET_SESSION
+			sync_binlog=0
+			binlog_group_commit_sync_delay=50000
+
+			#Group Replication Limitations optimize
+			transaction_isolation=READ-COMMITTED
 		EOF
 
 		echo >&2 ">> Starting reporting script in the background"
+		echo "====>/report_status.sh root $MYSQL_ROOT_PASSWORD $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $ipaddr"
 		/report_status.sh root $MYSQL_ROOT_PASSWORD $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $ipaddr &
+
+		echo
+		echo 'MySQL init process done. Ready for start up.'
+		echo
 fi
 
 exec "$@"

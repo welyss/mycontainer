@@ -33,17 +33,14 @@ function check_discovery_service()
 
 function report_status()
 {
-	var=$1
-	key=$2
-
-	if [ ! -z $var ]; then
-		check_discovery_service
-
+	check_discovery_service
+	if [ -z $healthy_discovery ];then
+		echo "[$healthy_discovery] invaild."
+	else
 		URL="http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/nodes"
 		output=$(mysql --user=$USER --password=$PASSWORD -A -Bse "SELECT MEMBER_STATE FROM performance_schema.replication_group_members WHERE MEMBER_HOST = '$IPADDR'" 2> /dev/null)
-
-		if [ ! -z $value ]; then
-			curl -s $URL/$IPADDR -X PUT -d "value=$output&ttl=$TTL" > /dev/null
+		if [ ! -z $output ]; then
+			curl -s "$URL/$IPADDR" -XPUT -d value=$output -d ttl=$TTL > /dev/null
 		fi
 	fi
 }
