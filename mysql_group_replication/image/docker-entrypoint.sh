@@ -115,6 +115,16 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 			exit 1
 		fi
 
+		echo "!includedir /etc/mysql/mysql.conf.d/" > /etc/mysql/my.cnf
+		ipaddr=$(hostname -i | awk {'print $1'})
+		serverid=$(($(echo "$(echo $ipaddr|sed 's/\.//g')%4294967295")))
+		# initailize group replication options
+		cat >/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
+			server_id=$serverid
+			master_info_repository=TABLE
+			relay_log_info_repository=TABLE
+		EOF
+
 		# Get config
 		DATADIR="$(_get_config 'datadir' "$@")"
 		if [ ! -d "$DATADIR/mysql" ]; then
@@ -180,9 +190,10 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 						GRANT ALL ON *.* TO 'root'@'localhost' WITH GRANT OPTION ;
 						${rootCreate}
 						DROP DATABASE IF EXISTS test ;
-						CREATE USER 'repl'@'%' IDENTIFIED BY '${MYSQL_REPL_PASSWORD}';
-						GRANT SELECT, REPLICATION SLAVE ON *.* TO 'repl'@'%';
+						CREATE USER 'rpl_user'@'%' IDENTIFIED BY '${MYSQL_REPL_PASSWORD}';
+						GRANT REPLICATION SLAVE ON *.* TO 'rpl_user'@'%';
 						FLUSH PRIVILEGES ;
+						CHANGE MASTER TO MASTER_USER='rpl_user', MASTER_PASSWORD='${MYSQL_REPL_PASSWORD}' FOR CHANNEL 'group_replication_recovery';
 				EOSQL
 
 				if [ ! -z "$MYSQL_ROOT_PASSWORD" ]; then
@@ -226,28 +237,28 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 		fi
 
 		# check bootstrap_group
-		ipaddr=$(hostname -i | awk {'print $1'})
-		isbootstrap=$(curl -s http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME?prevExist=false -XPUT -d value=$ipaddr| jq -r '.node.value')
+		isbootstrap=$(curl -s http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/bootstrap?prevExist=false -XPUT -d value=$ipaddr|jq -r '.node.value')
 		if [ -z $isbootstrap ];then
 			# cluster exists, find servers
 			# check $isbootstrap alive
 			if ping -c 5 $isbootstrap;then
 				online=$(_waiting_for_ready)
-				# $online格式化后作为group_replication_group_seeds参数的值,端口默认33061
+				bootstrapgroup="off"
 			else
-				# ...
-				
+				isbootstrap=$(curl -s http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/bootstrap?prevValue=$isbootstrap -XDELETE|jq -r '.node.value')
+				if [ -z $isbootstrap ];then
+					bootstrapgroup="off"
+				else
+					bootstrapgroup="on"
+				fi
 			fi
 		else
 			# this is a new cluster
 			bootstrapgroup="on"
 		fi
 
-		serverid=$(($(echo "$(hostname -i | awk {'print $1'} |sed 's/\.//g')%4294967295")))
 		# initailize group replication options
-		echo "!includedir /etc/mysql/mysql.conf.d/" > /etc/mysql/my.cnf
-		cat >/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
-			server_id=$serverid
+		cat >>/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
 			group_replication_local_address=$ipaddr:33061
 			group_replication_group_seeds=$online
 			group_replication_start_on_boot=on

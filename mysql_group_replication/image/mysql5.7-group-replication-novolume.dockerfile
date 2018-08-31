@@ -25,6 +25,8 @@ RUN mkdir /docker-entrypoint-initdb.d
 RUN apt-get update && apt-get install -y --no-install-recommends \
 # for MYSQL_RANDOM_ROOT_PASSWORD
 		pwgen \
+# for mysql_ssl_rsa_setup
+		openssl \
 # FATAL ERROR: please install the following Perl modules before executing /usr/local/mysql/scripts/mysql_install_db:
 # File::Basename
 # File::Copy
@@ -43,8 +45,8 @@ RUN set -ex; \
 	rm -rf "$GNUPGHOME"; \
 	apt-key list > /dev/null
 
-ENV MYSQL_MAJOR 5.6
-ENV MYSQL_VERSION 5.6.41-1debian9
+ENV MYSQL_MAJOR 5.7
+ENV MYSQL_VERSION 5.7.23-1debian9
 
 RUN echo "deb http://repo.mysql.com/apt/debian/ stretch mysql-${MYSQL_MAJOR}" > /etc/apt/sources.list.d/mysql.list
 
@@ -69,20 +71,18 @@ RUN { \
 	&& echo '[mysqld]\nskip-host-cache\nskip-name-resolve' > /etc/mysql/conf.d/docker.cnf
 
 # mysql restore
-LABEL Description="This image is used to start the mysql" Vendor="Welyss" Version="1.0"
+LABEL Description="This image is used to start the mysql5.7 with group replication" Vendor="Welyss" Version="1.0"
 
-#RUN apt-get update && apt-get install -y --no-install-recommends apt-utils
-COPY percona-release_0.1-6.stretch_all.deb /tmp
-RUN dpkg -i /tmp/percona-release_0.1-6.stretch_all.deb \
-&& apt-get update && apt-get install -y --no-install-recommends curl percona-xtrabackup-24 \
-&& dpkg -P percona-release \
+RUN apt-get update && apt-get install -y --no-install-recommends curl jq iputils-ping \
 && apt-get -y autoremove && apt-get -y clean \
-&& rm -rf /tmp/percona-release_0.1-6.stretch_all.deb \
 && rm -rf /var/lib/apt/lists/*
 
 COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod 775 /usr/local/bin/docker-entrypoint.sh
 RUN ln -s /usr/local/bin/docker-entrypoint.sh /entrypoint.sh # backwards compat
+COPY report_status.sh /usr/local/bin/
+RUN chmod 775 /usr/local/bin/report_status.sh
+RUN ln -s /usr/local/bin/report_status.sh /report_status.sh # backwards compat
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 
