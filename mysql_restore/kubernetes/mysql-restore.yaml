@@ -10,17 +10,12 @@ spec:
     app: mysql-restore
   type: NodePort
 ---
-apiVersion: extensions/v1beta1
-kind: Deployment
+apiVersion: batch/v1
+kind: Job
 metadata:
   name: mysql-restore
   namespace: dba
 spec:
-  selector:
-    matchLabels:
-      app: mysql-restore
-  strategy:
-    type: Recreate
   template:
     metadata:
       labels:
@@ -48,6 +43,7 @@ spec:
         ports:
         - containerPort: 3306
           name: mysql
+      restartPolicy: Never
 ---
 apiVersion: v1
 kind: Secret
