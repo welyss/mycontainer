@@ -59,12 +59,18 @@ _get_config() {
 }
 
 _waiting_for_ready() {
+	local timeout=$1
 	local online=""
+	local index=0
 	while [ -z $online ];do
+		if [[ -n $timeout && $index -ge $timeout ]];then
+			return
+		fi
 		online=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/nodes"|jq -r '.node.nodes[]|select(.value=="ONLINE").key'|sed 's/.*\///g')
 		sleep 1
+		((index+=1))
 	done
-	echo $online|awk '{for(i=1;i<=NF;i++){ips=ips$i":33061";if(i<NF) ips=ips",";} print ips}'
+	echo $online|awk '{for(i=1;i<=NF;i++){hosts=hosts$i":33061";if(i<NF) hosts=hosts",";} print hosts}'
 }
 
 # allow the container to be started with `--user`
@@ -117,8 +123,11 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 		fi
 
 		echo "!includedir /etc/mysql/mysql.conf.d/" > /etc/mysql/my.cnf
-		ipaddr=$(hostname -i | awk {'print $1'})
-		serverid=$(($(echo "$(echo $ipaddr|sed 's/\.//g')%4294967295")))
+
+		host=$(hostname)
+		[[ `hostname` =~ -([0-9]+)$ ]] || exit 1
+		serverid=${BASH_REMATCH[1]}
+
 		# initailize group replication options
 		cat >/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
 			[mysqld]
@@ -144,7 +153,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 				echo 'Database initialized'
 
 				SOCKET="$(_get_config 'socket' "$@")"
-				"$@" --skip-networking --socket="${SOCKET}" &
+				"$@" --skip-networking --skip-grant-tables --socket="${SOCKET}" &
 				pid="$!"
 
 				mysql=( mysql --protocol=socket -uroot -hlocalhost --socket="${SOCKET}" )
@@ -161,11 +170,6 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 						exit 1
 				fi
 
-				if [ -z "$MYSQL_INITDB_SKIP_TZINFO" ]; then
-						# sed is for https://bugs.mysql.com/bug.php?id=20545
-						mysql_tzinfo_to_sql /usr/share/zoneinfo | sed 's/Local time zone must be set--see zic manual page/FCTY/' | "${mysql[@]}" mysql
-				fi
-
 				if [ ! -z "$MYSQL_RANDOM_ROOT_PASSWORD" ]; then
 						export MYSQL_ROOT_PASSWORD="$(pwgen -1 32)"
 						echo "GENERATED ROOT PASSWORD: $MYSQL_ROOT_PASSWORD"
@@ -177,7 +181,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 						# no, we don't care if read finds a terminating character in this heredoc
 						# https://unix.stackexchange.com/questions/265149/why-is-set-o-errexit-breaking-this-read-heredoc-expression/265151#265151
 						read -r -d '' rootCreate <<-EOSQL || true
-								CREATE USER 'root'@'${MYSQL_ROOT_HOST}' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}' ;
+								DROP USER IF EXISTS 'root'@'${MYSQL_ROOT_HOST}';CREATE USER 'root'@'${MYSQL_ROOT_HOST}' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}' ;
 								GRANT ALL ON *.* TO 'root'@'${MYSQL_ROOT_HOST}' WITH GRANT OPTION ;
 						EOSQL
 				fi
@@ -187,11 +191,12 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 						--  or products like mysql-fabric won't work
 						SET @@SESSION.SQL_LOG_BIN=0;
 
-						SET PASSWORD FOR 'root'@'localhost'=PASSWORD('${MYSQL_ROOT_PASSWORD}') ;
+						FLUSH PRIVILEGES;
+						DROP USER IF EXISTS 'root'@'localhost';CREATE USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
 						GRANT ALL ON *.* TO 'root'@'localhost' WITH GRANT OPTION ;
 						${rootCreate}
 						DROP DATABASE IF EXISTS test ;
-						CREATE USER 'rpl_user'@'%' IDENTIFIED BY '${MYSQL_REPL_PASSWORD}';
+						DROP USER IF EXISTS 'rpl_user'@'%';CREATE USER 'rpl_user'@'%' IDENTIFIED BY '${MYSQL_REPL_PASSWORD}';
 						GRANT REPLICATION SLAVE ON *.* TO 'rpl_user'@'%';
 						FLUSH PRIVILEGES ;
 						CHANGE MASTER TO MASTER_USER='rpl_user', MASTER_PASSWORD='${MYSQL_REPL_PASSWORD}' FOR CHANNEL 'group_replication_recovery';
@@ -208,7 +213,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 				fi
 
 				if [ "$MYSQL_USER" -a "$MYSQL_PASSWORD" ]; then
-						echo "CREATE USER '$MYSQL_USER'@'%' IDENTIFIED BY '$MYSQL_PASSWORD' ;" | "${mysql[@]}"
+						echo "DROP USER IF EXISTS '$MYSQL_USER'@'%';CREATE USER '$MYSQL_USER'@'%' IDENTIFIED BY '$MYSQL_PASSWORD' ;" | "${mysql[@]}"
 
 						if [ "$MYSQL_DATABASE" ]; then
 								echo "GRANT ALL ON \`$MYSQL_DATABASE\`.* TO '$MYSQL_USER'@'%' ;" | "${mysql[@]}"
@@ -234,36 +239,34 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 				fi
 		fi
 
+		myuuid=$(cat /proc/sys/kernel/random/uuid)
 		# check bootstrap_group
-		isbootstrap=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/bootstrap?prevExist=false" -XPUT -d value=$ipaddr|jq -r '.node.value')
-		if [ "$isbootstrap" = null ];then
+		index=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid?prevExist=false" -XPUT -d value=$myuuid|jq -r '.index')
+		if [ "$index" != null ];then
 			# cluster exists, find servers
-			isbootstrap=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/bootstrap"|jq -r '.node.value')
-			# check $isbootstrap alive
-			if ping -c 5 $isbootstrap && [ "$isbootstrap" != "$ipaddr" ];then
-				echo 'cluster exists and alive.'
-				online=$(_waiting_for_ready)
-				bootstrapgroup="off"
-			else
-				isbootstrap=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/bootstrap?prevValue=$isbootstrap" -XDELETE|jq -r '.node.key')
-				if [ "$isbootstrap" = null ];then
-					echo 'cluster exists and dead, delete old isbootstrap faild, we need waiting for others.'
-					bootstrapgroup="off"
+			uuid=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid"|jq -r '.node.value')
+			sleep $TTL
+			online=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/nodes"|jq -r '.node.nodes[]|select(.value=="ONLINE").key'|sed 's/.*\///g')
+			if [ -z $online ];then
+				uuid=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid?prevIndex=$index" -XPUT -d value=$myuuid|jq -r '.node.value')
+				if [ "$uuid" = null ];then
+					echo 'cluster exists and dead, delete old uuid faild, we need waiting for others.'
 					online=$(_waiting_for_ready)
+					uuid=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid"|jq -r '.node.value')
+					bootstrapgroup="off"
 				else
-					echo 'cluster exists and dead, delete old isbootstrap success, we will start as new bootstrap.'
-					curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/bootstrap?prevExist=false" -XPUT -d value=$ipaddr
+					echo 'cluster exists and dead, delete old uuid success, we will start as new bootstrap.'
 					bootstrapgroup="on"
 				fi
+			else
+				echo 'cluster exists, start as joiner.'
+				bootstrapgroup="off"
 			fi
 		else
 			# this is a new cluster
 			echo 'this is a new cluster.'
 			bootstrapgroup="on"
-		fi
-
-		if [ "$bootstrapgroup" = "on" ];then
-			online="$ipaddr:33061"
+			uuid=$myuuid
 		fi
 
 		# initailize group replication options
@@ -271,34 +274,17 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
 			gtid_mode=on
 			enforce_gtid_consistency=on
 			transaction_write_set_extraction=XXHASH64
-			group_replication_local_address="$ipaddr:33061"
+			group_replication_group_name=$uuid
+			group_replication_local_address="$host:33061"
 			group_replication_group_seeds="$online"
-			group_replication_start_on_boot=on
+			group_replication_start_on_boot=off
 			group_replication_bootstrap_group=$bootstrapgroup
-			report_host=$ipaddr
-		EOF
-
-		cat >>/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
-			expire_logs_days=3
-			group_replication_group_name="70155729-a504-11e8-9740-00ff8601922c"
-			group_replication_single_primary_mode=off
-			group_replication_enforce_update_everywhere_checks=on
-
-			#Group Replication Requirements optimize
-			slave_parallel_workers=8
-			slave_preserve_commit_order=1
-			slave_parallel_type=LOGICAL_CLOCK
-			binlog_transaction_dependency_tracking=WRITESET_SESSION
-			sync_binlog=0
-			binlog_group_commit_sync_delay=50000
-
-			#Group Replication Limitations optimize
-			transaction_isolation=READ-COMMITTED
+			report_host=$host
 		EOF
 
 		echo >&2 ">> Starting reporting script in the background"
-		echo "====>/report_status.sh root $MYSQL_ROOT_PASSWORD $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $ipaddr"
-		/report_status.sh root $MYSQL_ROOT_PASSWORD $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $ipaddr &
+		echo "====>/report_status.sh root $MYSQL_ROOT_PASSWORD $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $host"
+		/report_status.sh root $MYSQL_ROOT_PASSWORD $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $host &
 
 		echo
 		echo 'MySQL init process done. Ready for start up.'

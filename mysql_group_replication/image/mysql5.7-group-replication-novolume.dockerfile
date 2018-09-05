@@ -73,7 +73,7 @@ RUN { \
 # mysql restore
 LABEL Description="This image is used to start the mysql5.7 with group replication" Vendor="Welyss" Version="1.0"
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl jq iputils-ping \
+RUN apt-get update && apt-get install -y --no-install-recommends curl jq \
 && apt-get -y autoremove && apt-get -y clean \
 && rm -rf /var/lib/apt/lists/*
 
