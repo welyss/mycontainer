@@ -4,18 +4,18 @@ shopt -s nullglob
 
 # if command starts with an option, prepend mysqld
 if [ "${1:0:1}" = '-' ]; then
-		set -- mysqld "$@"
+	set -- mysqld "$@"
 fi
 
 # skip setup if they want an option that stops mysqld
 wantHelp=
 for arg; do
-		case "$arg" in
-				-'?'|--help|--print-defaults|-V|--version)
-						wantHelp=1
-						break
-						;;
-		esac
+	case "$arg" in
+		-'?'|--help|--print-defaults|-V|--version)
+			wantHelp=1
+			break
+			;;
+	esac
 done
 
 # usage: process_init_file FILENAME MYSQLCOMMAND...
@@ -24,38 +24,38 @@ done
 # function here, so that initializer scripts (*.sh) can use the same logic,
 # potentially recursively, or override the logic used in subsequent calls)
 process_init_file() {
-		local f="$1"; shift
-		local mysql=( "$@" )
+	local f="$1"; shift
+	local mysql=( "$@" )
 
-		case "$f" in
-				*.sh)	 echo "$0: running $f"; . "$f" ;;
-				*.sql)	echo "$0: running $f"; "${mysql[@]}" < "$f"; echo ;;
-				*.sql.gz) echo "$0: running $f"; gunzip -c "$f" | "${mysql[@]}"; echo ;;
-				*)		echo "$0: ignoring $f" ;;
-		esac
-		echo
+	case "$f" in
+		*.sh)	 echo "$0: running $f"; . "$f" ;;
+		*.sql)	echo "$0: running $f"; "${mysql[@]}" < "$f"; echo ;;
+		*.sql.gz) echo "$0: running $f"; gunzip -c "$f" | "${mysql[@]}"; echo ;;
+		*)		echo "$0: ignoring $f" ;;
+	esac
+	echo
 }
 
 _check_config() {
-		toRun=( "$@" --verbose --help )
-		if ! errors="$("${toRun[@]}" 2>&1 >/dev/null)"; then
-				cat >&2 <<-EOM
+	toRun=( "$@" --verbose --help )
+	if ! errors="$("${toRun[@]}" 2>&1 >/dev/null)"; then
+		cat >&2 <<-EOM
 
-						ERROR: mysqld failed while attempting to check config
-						command was: "${toRun[*]}"
+			ERROR: mysqld failed while attempting to check config
+			command was: "${toRun[*]}"
 
-						$errors
-				EOM
-				exit 1
-		fi
+			$errors
+		EOM
+		exit 1
+	fi
 }
 
 # Fetch value from server config
 # We use mysqld --verbose --help instead of my_print_defaults because the
 # latter only show values present in config files, and not server defaults
 _get_config() {
-		local conf="$1"; shift
-		"$@" --verbose --help --log-bin-index="$(mktemp -u)" 2>/dev/null | awk '$1 == "'"$conf"'" { print $2; exit }'
+	local conf="$1"; shift
+	"$@" --verbose --help --log-bin-index="$(mktemp -u)" 2>/dev/null | awk '$1 == "'"$conf"'" { print $2; exit }'
 }
 
 _waiting_for_ready() {
@@ -75,220 +75,230 @@ _waiting_for_ready() {
 
 # allow the container to be started with `--user`
 if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
-		_check_config "$@"
-		DATADIR="$(_get_config 'datadir' "$@")"
-		mkdir -p "$DATADIR"
-		chown -R mysql:mysql "$DATADIR"
-		chown -R mysql:mysql /etc/mysql
-		exec gosu mysql "$BASH_SOURCE" "$@"
+	_check_config "$@"
+
+	if [ -z "$MYSQL_ROOT_PASSWORD" -o -z "$CLUSTER_NAME" -o -z "$DISCOVERY_SERVICE" ]; then
+		echo >&2 '  You need to specify all of MYSQL_ROOT_PASSWORD, CLUSTER_NAME and DISCOVERY_SERVICE'
+		exit 1
+	fi
+
+	if [ -z "$MYSQL_REPL_PASSWORD" ];then
+		MYSQL_REPL_PASSWORD=$MYSQL_ROOT_PASSWORD
+	fi
+
+	repluser="repl"
+	[ -z "$TTL" ] && TTL=10
+
+	# still need to check config, container may have started with --user
+	_check_config "$@"
+
+	echo '>> Registering in the discovery service'
+	discovery_hosts=$(echo $DISCOVERY_SERVICE | tr ',' ' ')
+	flag=1
+	echo
+	# Loop to find a healthy discovery service host
+	for i in $discovery_hosts
+	do
+		echo ">> Connecting to http://${i}/health"
+		curl -s http://${i}/health || continue
+		if curl -s http://$i/health | jq -e 'contains({ "health": "true"})'; then
+			healthy_discovery=$i
+			flag=0
+			break
+		else
+			echo >&2 ">> Node $i is unhealty. Proceed to the next node."
+		fi
+	done
+	# Flag is 0 if there is a healthy discovery service host
+	if [ $flag -ne 0 ]; then
+		echo ">> Couldn't reach healthy discovery service nodes."
+		exit 1
+	fi
+
+	echo "!includedir /etc/mysql/mysql.conf.d/" > /etc/mysql/my.cnf
+
+	host=$(hostname)
+	[[ `hostname` =~ -([0-9]+)$ ]] || exit 1
+	serverid=${BASH_REMATCH[1]}
+
+	# initailize group replication options
+	cat >/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
+		[mysqld]
+		#Group Replication Requirements
+		server_id=$serverid
+		master_info_repository=TABLE
+		relay_log_info_repository=TABLE
+		binlog_checksum=none
+		log_slave_updates=on
+		log_bin=binlog
+		relay_log=relay-bin
+		binlog_format=row
+	EOF
+
+	myuuid=$(cat /proc/sys/kernel/random/uuid)
+	# check bootstrap_group
+	index=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid?prevExist=false" -XPUT -d value=$myuuid|jq -r '.index')
+	if [ "$index" != null ];then
+		# cluster exists, find servers
+		uuid=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid"|jq -r '.node.value')
+		sleep $TTL
+		online=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/nodes"|jq -r '.node.nodes[]|select(.value=="ONLINE").key'|sed 's/.*\///g')
+		if [ -z $online ];then
+			uuid=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid?prevIndex=$index" -XPUT -d value=$myuuid|jq -r '.node.value')
+			if [ "$uuid" = null ];then
+				echo 'cluster exists and dead, delete old uuid faild, we need waiting for others.'
+				online=$(_waiting_for_ready)
+				uuid=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid"|jq -r '.node.value')
+				bootstrapgroup="off"
+			else
+				echo 'cluster exists and dead, delete old uuid success, we will start as new bootstrap.'
+				bootstrapgroup="on"
+			fi
+		else
+			echo 'cluster exists, start as joiner.'
+			bootstrapgroup="off"
+		fi
+	else
+		# this is a new cluster
+		echo 'this is a new cluster.'
+		bootstrapgroup="on"
+		uuid=$myuuid
+	fi
+
+	# set group replication options
+	cat >>/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
+		gtid_mode=on
+		enforce_gtid_consistency=on
+		transaction_write_set_extraction=XXHASH64
+		group_replication_group_name=$uuid
+		group_replication_local_address=$host:33061
+		group_replication_group_seeds=$online
+		group_replication_bootstrap_group=$bootstrapgroup
+		report_host=$host
+	EOF
+
+	# Initializing datadir
+	DATADIR="$(_get_config 'datadir' "$@")"
+	mkdir -p "$DATADIR"
+	if [ ! -d "$DATADIR/mysql" ]; then
+		if [ "$bootstrapgroup" = "on" ];then
+			echo 'Initializing database'
+			"$@" --initialize-insecure
+			echo 'Database initialized'
+		else
+			# Clone data from previous peer.
+			peer=$(echo $online|awk -F',' '{print $NF}'|awk -F':' '{print $1}')
+			ncat --recv-only $peer.mysql 3307 | xbstream -x -C /var/lib/mysql
+			# Prepare the backup.
+			xtrabackup --prepare --target-dir=/var/lib/mysql
+		fi
+	fi
+
+	chown -R mysql:mysql "$DATADIR"
+	chown -R mysql:mysql /etc/mysql
+	exec gosu mysql "$BASH_SOURCE" "$@"
 fi
 
 if [ "$1" = 'mysqld' -a -z "$wantHelp" ]; then
-		if [ -z "$MYSQL_ROOT_PASSWORD" -o -z "$CLUSTER_NAME" -o -z "$DISCOVERY_SERVICE" ]; then
-				echo >&2 '  You need to specify all of MYSQL_ROOT_PASSWORD, CLUSTER_NAME and DISCOVERY_SERVICE'
-				exit 1
-		fi
+	# Initializing database
+	SOCKET="$(_get_config 'socket' "$@")"
+	"$@" --skip-networking --skip-grant-tables --socket="${SOCKET}" &
+	pid="$!"
 
-		if [ -z "$MYSQL_REPL_PASSWORD" ];then
-			MYSQL_REPL_PASSWORD=$MYSQL_ROOT_PASSWORD
-		fi
+	mysql=( mysql --protocol=socket -uroot -hlocalhost --socket="${SOCKET}" )
 
-		repluser="repl"
-		[ -z "$TTL" ] && TTL=10
-
-		# still need to check config, container may have started with --user
-		_check_config "$@"
-
-		echo '>> Registering in the discovery service'
-		discovery_hosts=$(echo $DISCOVERY_SERVICE | tr ',' ' ')
-		flag=1
-		echo
-		# Loop to find a healthy discovery service host
-		for i in $discovery_hosts
-		do
-			echo ">> Connecting to http://${i}/health"
-			curl -s http://${i}/health || continue
-			if curl -s http://$i/health | jq -e 'contains({ "health": "true"})'; then
-				healthy_discovery=$i
-				flag=0
-				break
-			else
-				echo >&2 ">> Node $i is unhealty. Proceed to the next node."
+	for i in {30..0}; do
+			if echo 'SELECT 1' | "${mysql[@]}" &> /dev/null; then
+					break
 			fi
-		done
-		# Flag is 0 if there is a healthy discovery service host
-		if [ $flag -ne 0 ]; then
-			echo ">> Couldn't reach healthy discovery service nodes."
+			echo 'MySQL init process in progress...'
+			sleep 1
+	done
+	if [ "$i" = 0 ]; then
+			echo >&2 'MySQL init process failed.'
 			exit 1
-		fi
+	fi
 
-		echo "!includedir /etc/mysql/mysql.conf.d/" > /etc/mysql/my.cnf
+	if [ ! -z "$MYSQL_RANDOM_ROOT_PASSWORD" ]; then
+			export MYSQL_ROOT_PASSWORD="$(pwgen -1 32)"
+			echo "GENERATED ROOT PASSWORD: $MYSQL_ROOT_PASSWORD"
+	fi
 
-		host=$(hostname)
-		[[ `hostname` =~ -([0-9]+)$ ]] || exit 1
-		serverid=${BASH_REMATCH[1]}
+	rootCreate=
+	# default root to listen for connections from anywhere
+	if [ ! -z "$MYSQL_ROOT_HOST" -a "$MYSQL_ROOT_HOST" != 'localhost' ]; then
+			# no, we don't care if read finds a terminating character in this heredoc
+			# https://unix.stackexchange.com/questions/265149/why-is-set-o-errexit-breaking-this-read-heredoc-expression/265151#265151
+			read -r -d '' rootCreate <<-EOSQL || true
+					DROP USER IF EXISTS 'root'@'${MYSQL_ROOT_HOST}';CREATE USER 'root'@'${MYSQL_ROOT_HOST}' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}' ;
+					GRANT ALL ON *.* TO 'root'@'${MYSQL_ROOT_HOST}' WITH GRANT OPTION ;
+			EOSQL
+	fi
 
-		# initailize group replication options
-		cat >/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
-			[mysqld]
-			#Group Replication Requirements
-			server_id=$serverid
-			master_info_repository=TABLE
-			relay_log_info_repository=TABLE
-			binlog_checksum=none
-			log_slave_updates=on
-			log_bin=binlog
-			relay_log=relay-bin
-			binlog_format=row
-		EOF
+	"${mysql[@]}" <<-EOSQL
+			-- What's done in this file shouldn't be replicated
+			--  or products like mysql-fabric won't work
+			SET @@SESSION.SQL_LOG_BIN=0;
 
-		# Get config
-		DATADIR="$(_get_config 'datadir' "$@")"
-		if [ ! -d "$DATADIR/mysql" ]; then
+			FLUSH PRIVILEGES;
+			DROP USER IF EXISTS 'root'@'localhost';CREATE USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
+			GRANT ALL ON *.* TO 'root'@'localhost' WITH GRANT OPTION ;
+			${rootCreate}
+			DROP DATABASE IF EXISTS test ;
+			DROP USER IF EXISTS 'rpl_user'@'%';CREATE USER 'rpl_user'@'%' IDENTIFIED BY '${MYSQL_REPL_PASSWORD}';
+			GRANT REPLICATION SLAVE ON *.* TO 'rpl_user'@'%';
+			FLUSH PRIVILEGES ;
+			CHANGE MASTER TO MASTER_USER='rpl_user', MASTER_PASSWORD='${MYSQL_REPL_PASSWORD}' FOR CHANNEL 'group_replication_recovery';
+			INSTALL PLUGIN group_replication SONAME 'group_replication.so';
+	EOSQL
 
-				mkdir -p "$DATADIR"
+	if [ ! -z "$MYSQL_ROOT_PASSWORD" ]; then
+		mysql+=( -p"${MYSQL_ROOT_PASSWORD}" )
+	fi
 
-				echo 'Initializing database'
-				"$@" --initialize-insecure
-				echo 'Database initialized'
+	if [ "$MYSQL_DATABASE" ]; then
+			echo "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\` ;" | "${mysql[@]}"
+			mysql+=( "$MYSQL_DATABASE" )
+	fi
 
-				SOCKET="$(_get_config 'socket' "$@")"
-				"$@" --skip-networking --skip-grant-tables --socket="${SOCKET}" &
-				pid="$!"
+	if [ "$MYSQL_USER" -a "$MYSQL_PASSWORD" ]; then
+			echo "DROP USER IF EXISTS '$MYSQL_USER'@'%';CREATE USER '$MYSQL_USER'@'%' IDENTIFIED BY '$MYSQL_PASSWORD' ;" | "${mysql[@]}"
 
-				mysql=( mysql --protocol=socket -uroot -hlocalhost --socket="${SOCKET}" )
-
-				for i in {30..0}; do
-						if echo 'SELECT 1' | "${mysql[@]}" &> /dev/null; then
-								break
-						fi
-						echo 'MySQL init process in progress...'
-						sleep 1
-				done
-				if [ "$i" = 0 ]; then
-						echo >&2 'MySQL init process failed.'
-						exit 1
-				fi
-
-				if [ ! -z "$MYSQL_RANDOM_ROOT_PASSWORD" ]; then
-						export MYSQL_ROOT_PASSWORD="$(pwgen -1 32)"
-						echo "GENERATED ROOT PASSWORD: $MYSQL_ROOT_PASSWORD"
-				fi
-
-				rootCreate=
-				# default root to listen for connections from anywhere
-				if [ ! -z "$MYSQL_ROOT_HOST" -a "$MYSQL_ROOT_HOST" != 'localhost' ]; then
-						# no, we don't care if read finds a terminating character in this heredoc
-						# https://unix.stackexchange.com/questions/265149/why-is-set-o-errexit-breaking-this-read-heredoc-expression/265151#265151
-						read -r -d '' rootCreate <<-EOSQL || true
-								DROP USER IF EXISTS 'root'@'${MYSQL_ROOT_HOST}';CREATE USER 'root'@'${MYSQL_ROOT_HOST}' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}' ;
-								GRANT ALL ON *.* TO 'root'@'${MYSQL_ROOT_HOST}' WITH GRANT OPTION ;
-						EOSQL
-				fi
-
-				"${mysql[@]}" <<-EOSQL
-						-- What's done in this file shouldn't be replicated
-						--  or products like mysql-fabric won't work
-						SET @@SESSION.SQL_LOG_BIN=0;
-
-						FLUSH PRIVILEGES;
-						DROP USER IF EXISTS 'root'@'localhost';CREATE USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
-						GRANT ALL ON *.* TO 'root'@'localhost' WITH GRANT OPTION ;
-						${rootCreate}
-						DROP DATABASE IF EXISTS test ;
-						DROP USER IF EXISTS 'rpl_user'@'%';CREATE USER 'rpl_user'@'%' IDENTIFIED BY '${MYSQL_REPL_PASSWORD}';
-						GRANT REPLICATION SLAVE ON *.* TO 'rpl_user'@'%';
-						FLUSH PRIVILEGES ;
-						CHANGE MASTER TO MASTER_USER='rpl_user', MASTER_PASSWORD='${MYSQL_REPL_PASSWORD}' FOR CHANNEL 'group_replication_recovery';
-						INSTALL PLUGIN group_replication SONAME 'group_replication.so';
-				EOSQL
-
-				if [ ! -z "$MYSQL_ROOT_PASSWORD" ]; then
-						mysql+=( -p"${MYSQL_ROOT_PASSWORD}" )
-				fi
-
-				if [ "$MYSQL_DATABASE" ]; then
-						echo "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\` ;" | "${mysql[@]}"
-						mysql+=( "$MYSQL_DATABASE" )
-				fi
-
-				if [ "$MYSQL_USER" -a "$MYSQL_PASSWORD" ]; then
-						echo "DROP USER IF EXISTS '$MYSQL_USER'@'%';CREATE USER '$MYSQL_USER'@'%' IDENTIFIED BY '$MYSQL_PASSWORD' ;" | "${mysql[@]}"
-
-						if [ "$MYSQL_DATABASE" ]; then
-								echo "GRANT ALL ON \`$MYSQL_DATABASE\`.* TO '$MYSQL_USER'@'%' ;" | "${mysql[@]}"
-						fi
-
-						echo 'FLUSH PRIVILEGES ;' | "${mysql[@]}"
-				fi
-
-				echo
-				ls /docker-entrypoint-initdb.d/ > /dev/null
-				for f in /docker-entrypoint-initdb.d/*; do
-						process_init_file "$f" "${mysql[@]}"
-				done
-
-				if [ ! -z "$MYSQL_ONETIME_PASSWORD" ]; then
-						"${mysql[@]}" <<-EOSQL
-								ALTER USER 'root'@'%' PASSWORD EXPIRE;
-						EOSQL
-				fi
-				if ! kill -s TERM "$pid" || ! wait "$pid"; then
-						echo >&2 'MySQL init process failed.'
-						exit 1
-				fi
-		fi
-
-		myuuid=$(cat /proc/sys/kernel/random/uuid)
-		# check bootstrap_group
-		index=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid?prevExist=false" -XPUT -d value=$myuuid|jq -r '.index')
-		if [ "$index" != null ];then
-			# cluster exists, find servers
-			uuid=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid"|jq -r '.node.value')
-			sleep $TTL
-			online=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/nodes"|jq -r '.node.nodes[]|select(.value=="ONLINE").key'|sed 's/.*\///g')
-			if [ -z $online ];then
-				uuid=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid?prevIndex=$index" -XPUT -d value=$myuuid|jq -r '.node.value')
-				if [ "$uuid" = null ];then
-					echo 'cluster exists and dead, delete old uuid faild, we need waiting for others.'
-					online=$(_waiting_for_ready)
-					uuid=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid"|jq -r '.node.value')
-					bootstrapgroup="off"
-				else
-					echo 'cluster exists and dead, delete old uuid success, we will start as new bootstrap.'
-					bootstrapgroup="on"
-				fi
-			else
-				echo 'cluster exists, start as joiner.'
-				bootstrapgroup="off"
+			if [ "$MYSQL_DATABASE" ]; then
+					echo "GRANT ALL ON \`$MYSQL_DATABASE\`.* TO '$MYSQL_USER'@'%' ;" | "${mysql[@]}"
 			fi
-		else
-			# this is a new cluster
-			echo 'this is a new cluster.'
-			bootstrapgroup="on"
-			uuid=$myuuid
-		fi
 
-		# initailize group replication options
-		cat >>/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
-			gtid_mode=on
-			enforce_gtid_consistency=on
-			transaction_write_set_extraction=XXHASH64
-			group_replication_group_name=$uuid
-			group_replication_local_address="$host:33061"
-			group_replication_group_seeds="$online"
-			group_replication_start_on_boot=off
-			group_replication_bootstrap_group=$bootstrapgroup
-			report_host=$host
-		EOF
+			echo 'FLUSH PRIVILEGES ;' | "${mysql[@]}"
+	fi
 
-		echo >&2 ">> Starting reporting script in the background"
-		echo "====>/report_status.sh root $MYSQL_ROOT_PASSWORD $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $host"
-		/report_status.sh root $MYSQL_ROOT_PASSWORD $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $host &
+	echo
+	ls /docker-entrypoint-initdb.d/ > /dev/null
+	for f in /docker-entrypoint-initdb.d/*; do
+		process_init_file "$f" "${mysql[@]}"
+	done
 
-		echo
-		echo 'MySQL init process done. Ready for start up.'
-		echo
+	if [ ! -z "$MYSQL_ONETIME_PASSWORD" ]; then
+		"${mysql[@]}" <<-EOSQL
+				ALTER USER 'root'@'%' PASSWORD EXPIRE;
+		EOSQL
+	fi
+	if ! kill -s TERM "$pid" || ! wait "$pid"; then
+		echo >&2 'MySQL init process failed.'
+		exit 1
+	fi
+
+	# set group_replication_start_on_boot
+	cat >>/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
+		group_replication_start_on_boot=on
+	EOF
+
+	echo >&2 ">> Starting reporting script in the background"
+	echo "====>/report_status.sh root $MYSQL_ROOT_PASSWORD $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $host"
+	/report_status.sh root $MYSQL_ROOT_PASSWORD $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $host &
+
+	echo
+	echo 'MySQL init process done. Ready for start up.'
+	echo
 fi
 
 exec "$@"
