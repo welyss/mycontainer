@@ -180,18 +180,18 @@ spec:
             # In case of container restart, attempt this at-most-once.
             mv change_master_to.sql.in change_master_to.sql.orig
             mysql -h 127.0.0.1 <<EOF
-          $(<change_master_to.sql.orig),
+          $(sed 's/;$//g'<change_master_to.sql.orig),
             MASTER_HOST='mysql-0.mysql',
             MASTER_USER='root',
             MASTER_PASSWORD='',
             MASTER_CONNECT_RETRY=10;
-          START SLAVE;
+            START SLAVE;
           EOF
           fi
 
           # Start a server to send backups when requested by peers.
           exec ncat --listen --keep-open --send-only --max-conns=1 3307 -c \
-            "xtrabackup --backup --slave-info --stream=xbstream --host=127.0.0.1 --user=root"
+            "innobackupex --backup --slave-info --stream=xbstream --host=127.0.0.1 --user=root /tmp"
         volumeMounts:
         - name: data
           mountPath: /var/lib/mysql
