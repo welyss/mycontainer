@@ -1,59 +1,19 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: mysql-group-replication
+  name: mysql-gr
   namespace: dba
 spec:
   ports:
   - port: 3306
+  clusterIP: None
   selector:
-    app: mysql-group-replication
-  type: NodePort
----
-apiVersion: extensions/v1beta1
-kind: StatefulSet
-metadata:
-  name: mysql-group-replication
-  namespace: dba
-spec:
-  selector:
-    matchLabels:
-      app: mysql-group-replication
-  serviceName: mysql
-  replicas: 3
-  template:
-    metadata:
-      labels:
-        app: mysql-group-replication
-    spec:
-      initContainers:
-      containers:
-      - image: registry.dev.hbec.com/dba/mysql-group-replication:0.1
-        name: mysql-group-replication
-        env:
-        - name: MYSQL_ROOT_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: mysql-group-replication
-              key: rootpassword
-        - name: BACKUP_DOWNLOAD_FULL_URL
-          valueFrom:
-            configMapKeyRef:
-              name: mysql-group-replication
-              key: BACKUP_DOWNLOAD_FULL_URL
-        - name: BACKUP_DOWNLOAD_INC_URL
-          valueFrom:
-            configMapKeyRef:
-              name: mysql-group-replication
-              key: BACKUP_DOWNLOAD_INC_URL
-        ports:
-        - containerPort: 3306
-          name: mysql
+    app: mysql-gr
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  name: mysql-group-replication
+  name: mysql-gr
   namespace: dba
 type: Opaque
 data:
@@ -62,8 +22,102 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: mysql-group-replication
+  name: mysql-gr
   namespace: dba
 data:
-  BACKUP_DOWNLOAD_FULL_URL: http://rdsbak-hangzhou-finance.oss-cn-hzfinance.aliyuncs.com/custins7481335/hins5079413_data_20180818093300.tar.gz?OSSAccessKeyId=LTAITfQ7krsrEwRn&Expires=1534902156&Signature=LbTMFe5QIBk6cYyoRrTjbhhCc4U%3D
-  BACKUP_DOWNLOAD_INC_URL:
+  CLUSTER_NAME: touker
+  DISCOVERY_SERVICE: etcd.kubernetes:2379
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-gr-opt
+  namespace: dba
+data:
+  optimize.cnf: |
+    [mysqld]
+    expire_logs_days=3
+    loose-group_replication_single_primary_mode=off
+    loose-group_replication_enforce_update_everywhere_checks=on
+    slave_parallel_workers=8
+    slave_preserve_commit_order=1
+    slave_parallel_type=LOGICAL_CLOCK
+    binlog_transaction_dependency_tracking=WRITESET_SESSION
+    sync_binlog=0
+    binlog_group_commit_sync_delay=50000
+    transaction_isolation=READ-COMMITTED
+---
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: mysql-gr
+  namespace: dba
+spec:
+  selector:
+    matchLabels:
+      app: mysql-gr
+  serviceName: mysql-gr
+  replicas: 3
+#  podManagementPolicy: Parallel
+  podManagementPolicy: OrderedReady
+  template:
+    metadata:
+      labels:
+        app: mysql-gr
+    spec:
+      initContainers:
+      containers:
+      - image: registry.dev.hbec.com/dba/mysql_gr:1.0
+#        imagePullPolicy: Always
+        name: mysql-gr
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-gr
+              key: rootpassword
+        envFrom:
+        - configMapRef:
+            name: mysql-gr
+        ports:
+        - containerPort: 3306
+          name: mysql-gr
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+        livenessProbe:
+          exec:
+            command: ["mysql", "-u", "root", "-e", "SELECT 1"]
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            # Check we can execute queries over TCP (skip-networking is off).
+            command: ["mysql", "-u", "root", "-e", "SELECT 1"]
+          initialDelaySeconds: 5
+          periodSeconds: 2
+          timeoutSeconds: 1
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+          subPath: mysql
+        - name: conf
+          mountPath: /etc/mysql/conf.d
+      volumes:
+      - name: conf
+        configMap:
+          name: mysql-gr-opt
+          items:
+          - key: optimize.cnf
+            path: optimize.cnf
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "dba"
+      resources:
+        requests:
+          storage: 2Gi

@@ -75,11 +75,14 @@ LABEL Description="This image is used to start the mysql5.7 with group replicati
 
 COPY percona-release_0.1-6.stretch_all.deb /tmp
 RUN dpkg -i /tmp/percona-release_0.1-6.stretch_all.deb \
-&& apt-get update && apt-get install -y --no-install-recommends curl percona-xtrabackup-24 jq \
+&& apt-get update && apt-get install -y --no-install-recommends curl percona-xtrabackup-24 jq nmap \
 && dpkg -P percona-release \
 && apt-get -y autoremove && apt-get -y clean \
 && rm -rf /tmp/percona-release_0.1-6.stretch_all.deb \
 && rm -rf /var/lib/apt/lists/*
+
+RUN echo>/etc/mysql/mysql.conf.d/group_replication.cnf \
+&& chown mysql:mysql /etc/mysql/mysql.conf.d/group_replication.cnf
 
 COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod 775 /usr/local/bin/docker-entrypoint.sh && chown mysql:mysql /usr/local/bin/docker-entrypoint.sh
@@ -91,4 +94,5 @@ RUN ln -s /usr/local/bin/report_status.sh /report_status.sh # backwards compat
 ENTRYPOINT ["docker-entrypoint.sh"]
 
 EXPOSE 3306
+EXPOSE 3307
 CMD ["mysqld"]

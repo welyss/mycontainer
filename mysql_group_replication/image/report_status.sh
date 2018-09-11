@@ -1,15 +1,14 @@
 #!/bin/bash
 # Report Mysql Group Replication status to discovery service periodically.
-# report_status.sh [mysql user] [mysql password] [cluster name] [interval] [comma separated discovery service hosts] [HOST]
+# report_status.sh [mysql socket] [cluster name] [interval] [comma separated discovery service hosts] [HOST]
 # Example: 
-# report_status.sh root myS3cret galera_cluster 15 192.168.55.111:2379,192.168.55.112:2379,192.168.55.113:2379 192.168.55.113
+# report_status.sh /var/lib/mysql/socket galera_cluster 15 192.168.55.111:2379,192.168.55.112:2379,192.168.55.113:2379 192.168.55.113
 
-USER=$1
-PASSWORD=$2
-CLUSTER_NAME=$3
-TTL=$4
-DISCOVERY_SERVICE=$5
-HOST=$6
+SOCKET=$1
+CLUSTER_NAME=$2
+TTL=$3
+DISCOVERY_SERVICE=$4
+HOST=$5
 
 function check_discovery_service()
 {
@@ -38,7 +37,7 @@ function report_status()
 		echo "[$healthy_discovery] invaild."
 	else
 		URL="http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/nodes"
-		output=$(mysql --user=$USER --password=$PASSWORD -A -Bse "SELECT MEMBER_STATE FROM performance_schema.replication_group_members WHERE MEMBER_HOST = '$HOST'" 2> /dev/null)
+		output=$(mysql --user=root -S$SOCKET -A -Bse "SELECT MEMBER_STATE FROM performance_schema.replication_group_members WHERE MEMBER_HOST = '$HOST'" 2> /dev/null)
 		if [ ! -z $output ]; then
 			curl -s "$URL/$HOST" -XPUT -d value=$output -d ttl=$TTL > /dev/null
 		fi
