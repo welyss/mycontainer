@@ -66,15 +66,21 @@ _waiting_for_ready() {
 		if [[ -n $timeout && $index -ge $timeout ]];then
 			return
 		fi
-		nodes=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/nodes")
-		if [ $(echo $nodes|jq -r '.node.nodes') != null ];then
-			online=$(echo $nodes|jq -r '.node.nodes[]|select(.value=="ONLINE").key'|sed 's/.*\///g')
+		nodes=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/nodes"|jq -r '.node.nodes')
+		if [[ "$nodes" != null ]];then
+			online=$(echo "$nodes"|jq -r '.[]|select(.value=="ONLINE").key'|sed 's/.*\///g')
 		fi
 		sleep 1
 		((index+=1))
 	done
-	echo $online|awk '{for(i=1;i<=NF;i++){hosts=hosts$i":33061";if(i<NF) hosts=hosts",";} print hosts}'
+	echo $online|awk '{for(i=1;i<=NF;i++){hosts=hosts$i".'$SERVICE_NAME':33061";if(i<NF) hosts=hosts",";} print hosts}'
 }
+
+[ -z "$TTL" ] && TTL=10
+host=$(hostname)
+if [ -z $SERVICE_NAME ];then
+	SERVICE_NAME=mysql-gr
+fi
 
 # allow the container to be started with `--user`
 if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
@@ -84,7 +90,6 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 	fi
 
 	repluser="repl"
-	[ -z "$TTL" ] && TTL=10
 
 	echo '>> Registering in the discovery service'
 	discovery_hosts=$(echo $DISCOVERY_SERVICE | tr ',' ' ')
@@ -109,12 +114,11 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 		exit 1
 	fi
 
-	host=$(hostname)
 	[[ `hostname` =~ -([0-9]+)$ ]] || exit 1
-	serverid=$((${BASH_REMATCH[1]}+1))
+	serverid=$((${BASH_REMATCH[1]}+100))
 
 	# initailize group replication options
-	cat >/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
+	cat >>/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
 		[mysqld]
 		#Group Replication Requirements
 		server_id=$serverid
@@ -131,10 +135,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 	# elect leader
 	# wait for all of heath check finished.
 	sleep $TTL
-	nodes=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/nodes")
-	if [ $(echo $nodes|jq -r '.node.nodes') != null ];then
-		online=$(echo $nodes|jq -r '.node.nodes[]|select(.value=="ONLINE").key'|sed 's/.*\///g')
-	fi
+	online=$(_waiting_for_ready 1)
 	if [ -z $online ];then
 		echo 'No online nodes, need to create cluster.'
 		if ! curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid" -XPUT -d value=$myuuid; then
@@ -171,12 +172,8 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 			echo 'Database initialized'
 		else
 			# Clone data from previous peer.
-			peer=$(echo $online|awk -F',' '{print $NF}'|awk -F':' '{print $1}')
-			if [ -z $SERVICE_NAME ];then
-				SERVICE_NAME=mysql_gr
-			fi
-			echo "fetching data from $peer.$SERVICE_NAME"
-			ncat --recv-only $peer.$SERVICE_NAME 3307 | xbstream -x -C $DATADIR
+			echo "fetching data from $online"
+			ncat --recv-only $online 3307 | xbstream -x -C $DATADIR
 			# Prepare the backup.
 			echo 'preparing data with xtrabackup'
 			xtrabackup --prepare --target-dir=$DATADIR
@@ -196,9 +193,9 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 fi
 
 if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -un)" = 'mysql' ]; then
-	echo '====>group_replication.cnf start'
+	echo '==== group_replication.cnf start ===='
 	cat /etc/mysql/mysql.conf.d/group_replication.cnf
-	echo '====>group_replication.cnf end'
+	echo '==== group_replication.cnf end ===='
 	_check_config "$@"
 
 	# Initializing database
@@ -247,13 +244,11 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -un)" = 'mysql' ]; then
 		DROP USER IF EXISTS 'root'@'localhost';CREATE USER 'root'@'localhost';
 		GRANT ALL ON *.* TO 'root'@'localhost' WITH GRANT OPTION ;
 		${rootCreate}
-		DROP DATABASE IF EXISTS test ;
 		DROP USER IF EXISTS 'rpl_user'@'%';CREATE USER 'rpl_user'@'%' IDENTIFIED BY '${MYSQL_REPL_PASSWORD}';
 		GRANT REPLICATION SLAVE ON *.* TO 'rpl_user'@'%';
 		FLUSH PRIVILEGES ;
 		CHANGE MASTER TO MASTER_USER='rpl_user', MASTER_PASSWORD='${MYSQL_REPL_PASSWORD}' FOR CHANNEL 'group_replication_recovery';
 		${setPosition}
-		INSTALL PLUGIN group_replication SONAME 'group_replication.so';
 	EOSQL
 
 	if [ "$MYSQL_DATABASE" ]; then

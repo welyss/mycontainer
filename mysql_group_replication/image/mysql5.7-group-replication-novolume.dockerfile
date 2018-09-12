@@ -84,6 +84,19 @@ RUN dpkg -i /tmp/percona-release_0.1-6.stretch_all.deb \
 RUN echo>/etc/mysql/mysql.conf.d/group_replication.cnf \
 && chown mysql:mysql /etc/mysql/mysql.conf.d/group_replication.cnf
 
+RUN echo '[mysqld]'>>/etc/mysql/mysql.conf.d/group_replication.cnf \
+&& echo '#Group Replication Requirements'>>/etc/mysql/mysql.conf.d/group_replication.cnf \
+&& echo 'server_id=1'>>/etc/mysql/mysql.conf.d/group_replication.cnf \
+&& echo 'master_info_repository=TABLE'>>/etc/mysql/mysql.conf.d/group_replication.cnf \
+&& echo 'relay_log_info_repository=TABLE'>>/etc/mysql/mysql.conf.d/group_replication.cnf
+
+RUN mysqld --initialize-insecure --user=mysql
+RUN echo "INSTALL PLUGIN group_replication SONAME 'group_replication.so';">/tmp/init.sql \
+&& mysqld --skip-networking --skip-grant-tables --init-file=/tmp/init.sql --user=mysql &
+
+RUN rm -rf /var/lib/mysql && echo>/etc/mysql/mysql.conf.d/group_replication.cnf \
+&& rm -rf /tmp/init.sql
+
 COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod 775 /usr/local/bin/docker-entrypoint.sh && chown mysql:mysql /usr/local/bin/docker-entrypoint.sh
 RUN ln -s /usr/local/bin/docker-entrypoint.sh /entrypoint.sh # backwards compat
@@ -94,5 +107,6 @@ RUN ln -s /usr/local/bin/report_status.sh /report_status.sh # backwards compat
 ENTRYPOINT ["docker-entrypoint.sh"]
 
 EXPOSE 3306
+EXPOSE 33061
 EXPOSE 3307
 CMD ["mysqld"]

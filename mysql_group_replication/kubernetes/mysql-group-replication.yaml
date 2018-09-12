@@ -3,6 +3,8 @@ kind: Service
 metadata:
   name: mysql-gr
   namespace: dba
+  labels:
+    app: mysql-gr
 spec:
   ports:
   - port: 3306
