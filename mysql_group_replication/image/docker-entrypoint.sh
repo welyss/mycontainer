@@ -168,6 +168,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 	DATADIR="$(_get_config 'datadir' "$@")"
 	mkdir -p "$DATADIR"
 	if [ ! -d "$DATADIR/mysql" ]; then
+		installPlugin="INSERT INTO mysql.plugin values('group_replication', 'group_replication.so');"
 		if [ "$bootstrapgroup" = "on" ];then
 			echo 'Initializing database'
 			"$@" --initialize-insecure
@@ -261,6 +262,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 		FLUSH PRIVILEGES ;
 		${initDatabase}
 		CHANGE MASTER TO MASTER_USER='rpl_user', MASTER_PASSWORD='${MYSQL_REPL_PASSWORD}' FOR CHANNEL 'group_replication_recovery';
+		${installPlugin}
 		${setPosition}
 	EOSQL
 
