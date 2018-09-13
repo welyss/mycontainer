@@ -62,7 +62,7 @@ _waiting_for_ready() {
 	local timeout=$1
 	local online=""
 	local index=0
-	while [ -z $online ];do
+	while [ -z "$online" ];do
 		if [[ -n $timeout && $index -ge $timeout ]];then
 			return
 		fi
@@ -136,7 +136,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 	# wait for all of heath check finished.
 	sleep $TTL
 	online=$(_waiting_for_ready 1)
-	if [ -z $online ];then
+	if [ -z "$online" ];then
 		echo 'No online nodes, need to create cluster.'
 		if ! curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid" -XPUT -d value=$myuuid; then
 			echo 'set uuid faild, create cluster faild.'
@@ -174,7 +174,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 			echo 'Database initialized'
 		else
 			# Clone data from previous peer.
-			peer=$(echo "$online"|awk '{for(i=1;i<=NF;i++){hosts=hosts$i".'$SERVICE_NAME'";if(i<NF) hosts=hosts",";} print hosts}')
+			peer=$(echo "$online"|awk '{print $NF".'$SERVICE_NAME'"}')
 			echo "fetching data from $peer"
 			ncat --recv-only $peer 3307 | xbstream -x -C $DATADIR
 			# Prepare the backup.
