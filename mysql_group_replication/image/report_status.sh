@@ -9,6 +9,7 @@ CLUSTER_NAME=$2
 TTL=$3
 DISCOVERY_SERVICE=$4
 HOST=$5
+SERVICE_NAME=$6
 
 function check_discovery_service()
 {
@@ -37,12 +38,20 @@ function report_status()
 		echo "[$healthy_discovery] invaild."
 	else
 		URL="http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/nodes"
-		output=$(mysql --user=root -S$SOCKET -A -Bse "SELECT MEMBER_STATE FROM performance_schema.replication_group_members WHERE MEMBER_HOST = '$HOST'" 2> /dev/null)
+		output=$(mysql --user=root -S$SOCKET -A -Bse "SELECT MEMBER_STATE FROM performance_schema.replication_group_members WHERE MEMBER_HOST = '$HOST.$SERVICE_NAME'" 2> /dev/null)
 		if [ ! -z $output ]; then
 			curl -s "$URL/$HOST" -XPUT -d value=$output -d ttl=$TTL > /dev/null
 		fi
 	fi
 }
+
+while true;
+do
+	if mysql --user=root -S$SOCKET -e "SELECT 1" 2> /dev/null; then
+		mysql --user=root -S$SOCKET -e "START GROUP_REPLICATION" && break
+	fi
+	sleep 1
+done
 
 while true;
 do

@@ -73,7 +73,7 @@ _waiting_for_ready() {
 		sleep 1
 		((index+=1))
 	done
-	echo $online|awk '{for(i=1;i<=NF;i++){hosts=hosts$i".'$SERVICE_NAME':33061";if(i<NF) hosts=hosts",";} print hosts}'
+	echo $online
 }
 
 [ -z "$TTL" ] && TTL=10
@@ -146,6 +146,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 		uuid=$myuuid
 	else
 		echo 'online exists, joining to online nodes.'
+		seeds=$(echo "$online"|awk '{for(i=1;i<=NF;i++){hosts=hosts$i".'$SERVICE_NAME':33061";if(i<NF) hosts=hosts",";} print hosts}')
 		bootstrapgroup="off"
 		uuid=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid"|jq -r '.node.value')
 	fi
@@ -156,10 +157,10 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 		enforce_gtid_consistency=on
 		transaction_write_set_extraction=XXHASH64
 		loose-group_replication_group_name=$uuid
-		loose-group_replication_local_address=$host:33061
-		loose-group_replication_group_seeds=$online
+		loose-group_replication_local_address=$host.$SERVICE_NAME:33061
+		loose-group_replication_group_seeds=$seeds
 		loose-group_replication_bootstrap_group=$bootstrapgroup
-		report_host=$host
+		report_host=$host.$SERVICE_NAME
 	EOF
 
 	# Initializing datadir
@@ -172,27 +173,33 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 			echo 'Database initialized'
 		else
 			# Clone data from previous peer.
-			echo "fetching data from $online"
-			ncat --recv-only $online 3307 | xbstream -x -C $DATADIR
+			peer=$(echo "$online"|awk '{for(i=1;i<=NF;i++){hosts=hosts$i".'$SERVICE_NAME'";if(i<NF) hosts=hosts",";} print hosts}')
+			echo "fetching data from $peer"
+			ncat --recv-only $peer 3307 | xbstream -x -C $DATADIR
 			# Prepare the backup.
 			echo 'preparing data with xtrabackup'
 			xtrabackup --prepare --target-dir=$DATADIR
 			# check binlog pos
+			read -r -d '' initDatabase <<-EOSQL || true
+				RESET MASTER;RESET SLAVE ALL;
+				RESET SLAVE ALL FOR CHANNEL 'group_replication_recovery';
+				RESET SLAVE ALL FOR CHANNEL 'group_replication_applier';
+			EOSQL
 			if [[ -f $DATADIR/xtrabackup_slave_info ]]; then
 				setPosition=$(cat $DATADIR/xtrabackup_slave_info|head -1)
 			fi
-			if [[ -z $setPosition && -f $DATADIR/xtrabackup_binlog_info ]]; then
+			if [[ -z "$setPosition" && -f $DATADIR/xtrabackup_binlog_info ]]; then
 				setPosition=$(echo "SET GLOBAL gtid_purged='$(cat $DATADIR/xtrabackup_binlog_info|sed 's/.*\s\+//g')';")
 			fi
 		fi
+	else
+		echo 'datadir exists'
+		ls -al $DATADIR
 	fi
 
 	chown -R mysql:mysql "$DATADIR"
 	chown -R mysql:mysql /etc/mysql/mysql.conf.d/group_replication.cnf
-	exec gosu mysql "$BASH_SOURCE" "$@"
-fi
 
-if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -un)" = 'mysql' ]; then
 	echo '==== group_replication.cnf start ===='
 	cat /etc/mysql/mysql.conf.d/group_replication.cnf
 	echo '==== group_replication.cnf end ===='
@@ -200,7 +207,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -un)" = 'mysql' ]; then
 
 	# Initializing database
 	SOCKET="$(_get_config 'socket' "$@")"
-	"$@" --skip-networking --skip-grant-tables --socket="${SOCKET}" &
+	"$@" --skip-networking --skip-grant-tables --socket="${SOCKET}" --user=mysql &
 	pid="$!"
 
 	mysql=( mysql --protocol=socket -uroot --socket="${SOCKET}" )
@@ -235,6 +242,10 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -un)" = 'mysql' ]; then
 		fi
 	fi
 
+	echo "executing sql script [rootCreate]:$rootCreate"
+	echo "executing sql script [initDatabase]:$initDatabase"
+	echo "executing sql script [setPosition]:$setPosition"
+
 	"${mysql[@]}" <<-EOSQL
 		-- What's done in this file shouldn't be replicated
 		--  or products like mysql-fabric won't work
@@ -247,6 +258,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -un)" = 'mysql' ]; then
 		DROP USER IF EXISTS 'rpl_user'@'%';CREATE USER 'rpl_user'@'%' IDENTIFIED BY '${MYSQL_REPL_PASSWORD}';
 		GRANT REPLICATION SLAVE ON *.* TO 'rpl_user'@'%';
 		FLUSH PRIVILEGES ;
+		${initDatabase}
 		CHANGE MASTER TO MASTER_USER='rpl_user', MASTER_PASSWORD='${MYSQL_REPL_PASSWORD}' FOR CHANNEL 'group_replication_recovery';
 		${setPosition}
 	EOSQL
@@ -284,12 +296,12 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -un)" = 'mysql' ]; then
 
 	# set group_replication_start_on_boot
 	cat >>/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
-		loose-group_replication_start_on_boot=on
+		loose-group_replication_start_on_boot=off
 	EOF
 
 	echo >&2 ">> Starting reporting script in the background"
-	echo "====>/report_status.sh $SOCKET $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $host"
-	/report_status.sh $SOCKET $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $host &
+	echo "====>/report_status.sh $SOCKET $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $host $SERVICE_NAME"
+	/report_status.sh $SOCKET $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $host $SERVICE_NAME &
 
 	echo >&2 ">> Starting ncat send server in the background on port 3307"
 	ncat --listen --keep-open --send-only --max-conns=1 3307 -c \
@@ -298,6 +310,12 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -un)" = 'mysql' ]; then
 	echo
 	echo 'MySQL init process done. Ready for start up.'
 	echo
+
+	exec gosu mysql "$BASH_SOURCE" "$@"
+fi
+
+if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -un)" = 'mysql' ]; then
+	echo 'starting mysqld as mysql'
 fi
 
 exec "$@"
