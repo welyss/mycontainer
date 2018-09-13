@@ -103,6 +103,9 @@ RUN ln -s /usr/local/bin/docker-entrypoint.sh /entrypoint.sh # backwards compat
 COPY report_status.sh /usr/local/bin/
 RUN chmod 775 /usr/local/bin/report_status.sh && chown mysql:mysql /usr/local/bin/report_status.sh
 RUN ln -s /usr/local/bin/report_status.sh /report_status.sh # backwards compat
+COPY health.sh /usr/local/bin/
+RUN chmod 775 /usr/local/bin/health.sh && chown mysql:mysql /usr/local/bin/health.sh
+RUN ln -s /usr/local/bin/health.sh /health.sh # backwards compat
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 

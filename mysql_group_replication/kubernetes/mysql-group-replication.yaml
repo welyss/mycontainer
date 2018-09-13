@@ -90,7 +90,7 @@ spec:
             memory: 1Gi
         livenessProbe:
           exec:
-            command: ["mysql", "-u", "root", "-e", "SELECT 1"]
+            command: ["health.sh"]
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5

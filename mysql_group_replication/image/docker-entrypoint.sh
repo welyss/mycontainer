@@ -160,6 +160,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 		loose-group_replication_local_address=$host.$SERVICE_NAME:33061
 		loose-group_replication_group_seeds=$seeds
 		loose-group_replication_bootstrap_group=$bootstrapgroup
+		loose-group_replication_start_on_boot=off
 		report_host=$host.$SERVICE_NAME
 	EOF
 
@@ -293,11 +294,6 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 		echo >&2 'MySQL init process failed.'
 		exit 1
 	fi
-
-	# set group_replication_start_on_boot
-	cat >>/etc/mysql/mysql.conf.d/group_replication.cnf<<-EOF
-		loose-group_replication_start_on_boot=off
-	EOF
 
 	echo >&2 ">> Starting reporting script in the background"
 	echo "====>/report_status.sh $SOCKET $CLUSTER_NAME $TTL $DISCOVERY_SERVICE $host $SERVICE_NAME"
