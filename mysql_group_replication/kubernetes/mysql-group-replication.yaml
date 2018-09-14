@@ -62,6 +62,7 @@ data:
     sync_binlog=0
     binlog_group_commit_sync_delay=50000
     transaction_isolation=READ-COMMITTED
+    skip_name_resolve
 ---
 apiVersion: apps/v1beta1
 kind: StatefulSet
