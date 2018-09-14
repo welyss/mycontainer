@@ -157,7 +157,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 		enforce_gtid_consistency=on
 		transaction_write_set_extraction=XXHASH64
 		loose-group_replication_group_name=$uuid
-		loose-group_replication_local_address=$host.$SERVICE_NAME:33061
+		loose-group_replication_local_address=$(hostname -i):33061
 		loose-group_replication_group_seeds=$seeds
 		loose-group_replication_bootstrap_group=$bootstrapgroup
 		loose-group_replication_start_on_boot=off
