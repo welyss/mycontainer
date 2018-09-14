@@ -168,11 +168,11 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 	DATADIR="$(_get_config 'datadir' "$@")"
 	mkdir -p "$DATADIR"
 	if [ ! -d "$DATADIR/mysql" ]; then
-		installPlugin="INSERT INTO mysql.plugin values('group_replication', 'group_replication.so');"
 		if [ "$bootstrapgroup" = "on" ];then
 			echo 'Initializing database'
 			"$@" --initialize-insecure
 			echo 'Database initialized'
+			installPlugin="INSERT INTO mysql.plugin values('group_replication', 'group_replication.so');"
 		else
 			# Clone data from previous peer.
 			peer=$(echo "$online"|awk '{print $NF".'$SERVICE_NAME'"}')
