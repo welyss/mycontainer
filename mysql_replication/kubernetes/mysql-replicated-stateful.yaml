@@ -118,6 +118,8 @@ spec:
         env:
         - name: MYSQL_ALLOW_EMPTY_PASSWORD
           value: "1"
+        - name: MYSQL_ROOT_HOST
+          value: "localhost"
         ports:
         - name: mysql
           containerPort: 3306
@@ -224,4 +226,4 @@ spec:
       storageClassName: "dba"
       resources:
         requests:
-          storage: 10Gi
+          storage: 2Gi
