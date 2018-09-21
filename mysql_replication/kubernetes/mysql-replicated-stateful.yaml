@@ -48,6 +48,23 @@ spec:
     app: mysql
   type: LoadBalancer
 ---
+# Client service for connecting to any MySQL instance for writes.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-write
+  namespace: dba
+  labels:
+    app: mysql
+spec:
+  ports:
+  - name: mysql
+    port: 3306
+  selector:
+    app: mysql
+  type: LoadBalancer
+---
+# StatefulSet mysql cluster
 apiVersion: apps/v1beta1
 kind: StatefulSet
 metadata:
@@ -198,6 +215,58 @@ spec:
               START SLAVE;
           EOF
           fi
+
+          # Update Endpoints for write.
+          endpoint=$(curl -s https://$KUBERNETES_SERVICE_HOST/api/v1/namespaces/dba/pods/$(hostname|sed -r 's/-[0-9]+$/-0/g') --header "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt|grep "podIP"|sed 's/[, "]//g'|awk -F':' '{print $2}'|grep [0-9]|tr -d ' ')
+          echo "this is master, update write endpoint to $endpoint."
+          while true;
+          do
+            ready=$(curl -s https://$KUBERNETES_SERVICE_HOST/api/v1/namespaces/dba/pods/$(hostname) --header "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt|grep 'ready":'|sed 's/,//'|awk -F: '{print $2}')
+            done="true"
+            echo "ready:$ready"
+            for i in $ready;
+            do
+              if [[ "$i" != "true" ]]; then
+                done="false"
+                break
+              fi
+            done
+            echo "my ready status is: $done"
+            if [[ "$done" = "true" ]]; then
+              break
+            fi
+            sleep 1
+          done
+          echo "replace endpoint to $endpoint."
+          curl -s https://$KUBERNETES_SERVICE_HOST/api/v1/namespaces/dba/endpoints/mysql-write -XPUT --header "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+            -H "Content-Type:application/json" \
+            -d "{
+                  \"kind\": \"Endpoints\",
+                  \"apiVersion\": \"v1\",
+                  \"metadata\": {
+                    \"name\": \"mysql-write\",
+                    \"namespace\": \"dba\",
+                    \"labels\": {
+                      \"app\": \"mysql\"
+                    }
+                  },
+                  \"subsets\": [
+                    {
+                      \"addresses\": [
+                        {
+                          \"ip\": \"$endpoint\"
+                        }
+                      ],
+                      \"ports\": [
+                        {
+                          \"name\": \"mysql\",
+                          \"port\": 3306,
+                          \"protocol\": \"TCP\"
+                        }
+                      ]
+                    }
+                  ]
+                }"
 
           # Start a server to send backups when requested by peers.
           exec ncat --listen --keep-open --send-only --max-conns=1 3307 -c \

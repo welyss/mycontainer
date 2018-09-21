@@ -3,12 +3,14 @@ kind: Service
 metadata:
   name: mysql-restore
   namespace: dba
+  labels:
+    app: mysql-restore
 spec:
+  type: LoadBalancer
   ports:
   - port: 3306
   selector:
     app: mysql-restore
-  type: NodePort
 ---
 apiVersion: batch/v1
 kind: Job
