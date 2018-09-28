@@ -175,7 +175,7 @@ spec:
         - bash
         - "-c"
         - |
-          set -ex
+          set -e
           cd /var/lib/mysql
           # Determine binlog position of cloned data, if any.
           if [[ -f xtrabackup_slave_info && -n $(cat xtrabackup_slave_info) ]]; then
@@ -277,6 +277,7 @@ spec:
               curl -s https://$KUBERNETES_SERVICE_HOST/api/v1/namespaces/dba/endpoints/mysql-write -XPUT --header "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
               -H "Content-Type:application/json" \
               -d "{\"kind\":\"Endpoints\",\"apiVersion\":\"v1\",\"metadata\":{\"name\":\"mysql-write\",\"namespace\":\"dba\",\"labels\":{\"app\":\"mysql\"}},\"subsets\":[{\"addresses\":[{\"ip\":\"$endpoint\"}],\"ports\":[{\"name\":\"mysql\",\"port\":3306,\"protocol\":\"TCP\"}]}]}"; \
+              echo -e "\nupdate endpoint to ${endpoint} at $(date)";
             fi; \
             sleep $TTL; \
           done &
