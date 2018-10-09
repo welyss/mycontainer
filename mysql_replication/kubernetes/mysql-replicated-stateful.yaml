@@ -60,8 +60,6 @@ spec:
   ports:
   - name: mysql
     port: 3306
-  selector:
-    app: mysql
   type: LoadBalancer
 ---
 # StatefulSet mysql cluster
@@ -267,20 +265,6 @@ spec:
                     }
                   ]
                 }"
-
-          # Update Endpoints for write service in period.
-          [ -z "$TTL" ] && TTL=10
-          while true;do \
-            wcnt=$(curl -s https://$KUBERNETES_SERVICE_HOST/api/v1/namespaces/dba/endpoints/mysql-write --header "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt|grep "\"ip\":"|wc -l); \
-            if [ $wcnt -gt 1 ];then \
-              endpoint=$(curl -s https://$KUBERNETES_SERVICE_HOST/api/v1/namespaces/dba/pods/$(hostname|sed -r 's/-[0-9]+$/-0/g') --header "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt|grep "podIP"|sed 's/[, "]//g'|awk -F':' '{print $2}'|grep [0-9]|tr -d ' '); \
-              curl -s https://$KUBERNETES_SERVICE_HOST/api/v1/namespaces/dba/endpoints/mysql-write -XPUT --header "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
-              -H "Content-Type:application/json" \
-              -d "{\"kind\":\"Endpoints\",\"apiVersion\":\"v1\",\"metadata\":{\"name\":\"mysql-write\",\"namespace\":\"dba\",\"labels\":{\"app\":\"mysql\"}},\"subsets\":[{\"addresses\":[{\"ip\":\"$endpoint\"}],\"ports\":[{\"name\":\"mysql\",\"port\":3306,\"protocol\":\"TCP\"}]}]}"; \
-              echo -e "\nupdate endpoint to ${endpoint} at $(date)";
-            fi; \
-            sleep $TTL; \
-          done &
 
           # Start a server to send backups when requested by peers.
           exec ncat --listen --keep-open --send-only --max-conns=1 3307 -c \
