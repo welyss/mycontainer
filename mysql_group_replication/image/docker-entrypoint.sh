@@ -138,12 +138,16 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 	online=$(_waiting_for_ready 1)
 	if [ -z "$online" ];then
 		echo 'No online nodes, need to create cluster.'
-		if ! curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid" -XPUT -d value=$myuuid; then
-			echo 'set uuid faild, create cluster faild.'
-			exit 1
+		uuid=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid"|jq -r '.node.value')
+		if [[ "$uuid" == null ]];then
+			echo 'Cluster created first time, take myuuid as uuid and put it to etcd server!'
+			if ! curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid" -XPUT -d value=$myuuid; then
+				echo 'set uuid faild, create cluster faild.'
+				exit 1
+			fi
+			uuid=$myuuid
 		fi
 		bootstrapgroup="on"
-		uuid=$myuuid
 	else
 		echo 'online exists, joining to online nodes.'
 		seeds=$(echo "$online"|awk '{for(i=1;i<=NF;i++){hosts=hosts$i".'$SERVICE_NAME':33061";if(i<NF) hosts=hosts",";} print hosts}')
