@@ -71,7 +71,7 @@ RUN { \
 	&& echo '[mysqld]\nskip-host-cache\nskip-name-resolve' > /etc/mysql/conf.d/docker.cnf
 
 # mysql group replication
-LABEL Description="This image is used to start the mysql5.7 with group replication" Vendor="Welyss" Version="1.0"
+LABEL Description="This image is used to start the mysql5.7 with group replication" Vendor="Welyss" Version="1.1"
 
 COPY percona-release_0.1-6.stretch_all.deb /tmp
 RUN dpkg -i /tmp/percona-release_0.1-6.stretch_all.deb \

@@ -84,7 +84,7 @@ spec:
     spec:
       initContainers:
       containers:
-      - image: registry.dev.hbec.com/dba/mysql_gr:1.0
+      - image: registry.dev.hbec.com/dba/mysql_gr:1.1
 #        imagePullPolicy: Always
         name: mysql-gr
         env:
