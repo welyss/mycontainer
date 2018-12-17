@@ -79,7 +79,7 @@ _waiting_for_ready() {
 [ -z "$TTL" ] && TTL=10
 host=$(hostname)
 if [ -z $SERVICE_NAME ];then
-	SERVICE_NAME=mysql-gr
+	SERVICE_NAME="${CLUSTER_NAME}-srv"
 fi
 
 # allow the container to be started with `--user`
@@ -150,7 +150,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 		bootstrapgroup="on"
 	else
 		echo 'online exists, joining to online nodes.'
-		seeds=$(echo "$online"|awk '{for(i=1;i<=NF;i++){hosts=hosts$i".'$SERVICE_NAME':33061";if(i<NF) hosts=hosts",";} print hosts}')
+		seeds=$(echo "$online"|awk '{for(i=1;i<=NF;i++){hosts=hosts$i":33061";if(i<NF) hosts=hosts",";} print hosts}')
 		bootstrapgroup="off"
 		uuid=$(curl -s "http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/uuid"|jq -r '.node.value')
 	fi
@@ -179,7 +179,7 @@ if [ "$1" = 'mysqld' -a -z "$wantHelp" -a "$(id -u)" = '0' ]; then
 			installPlugin="INSERT INTO mysql.plugin values('group_replication', 'group_replication.so');"
 		else
 			# Clone data from previous peer.
-			peer=$(echo "$online"|awk '{print $NF".'$SERVICE_NAME'"}')
+			peer=$(echo "$online"|awk '{print $NF}')
 			echo "fetching data from $peer"
 			ncat --recv-only $peer 3307 | xbstream -x -C $DATADIR
 			# Prepare the backup.

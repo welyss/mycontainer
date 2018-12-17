@@ -1,35 +1,35 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: mysql-gr-lb
+  name: ${CLUSTER_NAME}-lb-srv
   namespace: dba
   labels:
-    app: mysql-gr-lb
+    ${CLUSTER_NAME}: LoadBalancer-Service
 spec:
   ports:
   - port: 3306
   type: LoadBalancer
   selector:
-    app: mysql-gr
+    app: ${CLUSTER_NAME}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: mysql-gr
+  name: ${CLUSTER_NAME}-srv
   namespace: dba
   labels:
-    app: mysql-gr
+    ${CLUSTER_NAME}: None-Service
 spec:
   ports:
   - port: 3306
   clusterIP: None
   selector:
-    app: mysql-gr
+    app: ${CLUSTER_NAME}
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  name: mysql-gr
+  name: ${CLUSTER_NAME}-st
   namespace: dba
 type: Opaque
 data:
@@ -38,16 +38,16 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: mysql-gr
+  name: ${CLUSTER_NAME}-cm
   namespace: dba
 data:
-  CLUSTER_NAME: touker
+  CLUSTER_NAME: ${CLUSTER_NAME}
   DISCOVERY_SERVICE: etcd.kubernetes:2379
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: mysql-gr-opt
+  name: ${CLUSTER_NAME}-cnf-cm
   namespace: dba
 data:
   optimize.cnf: |
@@ -67,35 +67,35 @@ data:
 apiVersion: apps/v1beta1
 kind: StatefulSet
 metadata:
-  name: mysql-gr
+  name: ${CLUSTER_NAME}-ss
   namespace: dba
 spec:
   selector:
     matchLabels:
-      app: mysql-gr
-  serviceName: mysql-gr
+      app: ${CLUSTER_NAME} # has to match .spec.template.metadata.labels
+  serviceName: ${CLUSTER_NAME}-srv
   replicas: 3
 #  podManagementPolicy: Parallel
   podManagementPolicy: OrderedReady
   template:
     metadata:
       labels:
-        app: mysql-gr
+        app: ${CLUSTER_NAME} # has to match .spec.selector.matchLabels
     spec:
       initContainers:
       containers:
-      - image: registry.dev.hbec.com/dba/mysql_gr:1.1
+      - image: registry.dev.hbec.com/dba/mysql_gr:1.2
 #        imagePullPolicy: Always
-        name: mysql-gr
+        name: ${CLUSTER_NAME}
         env:
         - name: MYSQL_ROOT_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: mysql-gr
+              name: ${CLUSTER_NAME}-st
               key: rootpassword
         envFrom:
         - configMapRef:
-            name: mysql-gr
+            name: ${CLUSTER_NAME}-cm
         ports:
         - containerPort: 3306
           name: mysql-gr
@@ -117,7 +117,7 @@ spec:
           periodSeconds: 2
           timeoutSeconds: 1
         volumeMounts:
-        - name: data
+        - name: mysql-gr-datadir
           mountPath: /var/lib/mysql
           subPath: mysql
         - name: conf
@@ -125,13 +125,13 @@ spec:
       volumes:
       - name: conf
         configMap:
-          name: mysql-gr-opt
+          name: ${CLUSTER_NAME}-cnf-cm
           items:
           - key: optimize.cnf
             path: optimize.cnf
   volumeClaimTemplates:
   - metadata:
-      name: data
+      name: mysql-gr-datadir
     spec:
       accessModes: ["ReadWriteOnce"]
       storageClassName: "dba"

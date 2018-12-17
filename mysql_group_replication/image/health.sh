@@ -25,7 +25,7 @@ check_discovery_service
 if [ ! -z "$healthy_discovery" ]; then
 	URL="http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/nodes"
 	HOST=$(hostname)
-	health=$(curl -s "$URL/$HOST"|jq -r '.node|select(.value=="ONLINE").key')
+	health=$(curl -s "$URL/$HOST.${CLUSTER_NAME}-srv"|jq -r '.node|select(.value=="ONLINE").key')
 	if [[ "$health" != "" ]];then
 		exit 0
 	fi

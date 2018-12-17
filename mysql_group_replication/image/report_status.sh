@@ -39,7 +39,7 @@ function report_status()
 		URL="http://$healthy_discovery/v2/keys/mysql/$CLUSTER_NAME/nodes"
 		output=$(mysql --user=root -S$SOCKET -A -Bse "SELECT MEMBER_STATE FROM performance_schema.replication_group_members WHERE MEMBER_HOST = '$HOST.$SERVICE_NAME'" 2> /dev/null)
 		if [ ! -z $output ]; then
-			curl -s "$URL/$HOST" -XPUT -d value=$output -d ttl=$TTL > /dev/null
+			curl -s "$URL/$HOST.$SERVICE_NAME" -XPUT -d value=$output -d ttl=$TTL > /dev/null
 		fi
 	fi
 }
