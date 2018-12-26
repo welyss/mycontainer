@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hbec-db-monitor-srv
+  namespace: dba
+  labels:
+    hbec-db-monitor: LoadBalancer-Service
+    hbec-metrics: prometheus
+spec:
+  ports:
+  - port: 8080
+    name: http
+  type: ClusterIP
+  selector:
+    app: hbec-db-monitor
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hbec-db-monitor-st
+  namespace: dba
+type: Opaque
+data:
+  dbpassword: MTIzMTIz
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hbec-db-monitor-cm
+  namespace: dba
+data:
+  DATABASES_FOR_SLEEP: test,acdb
+  HBEC_DBINSTANCE_TEST_HOST: 10.0.30.59
+  HBEC_DBINSTANCE_TEST_USER: wuyushun
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: hbec-db-monitor-dm
+  namespace: dba
+  labels:
+    app: hbec-db-monitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hbec-db-monitor
+  template:
+    metadata:
+      labels:
+        app: hbec-db-monitor
+    spec:
+      containers:
+      - name: hbec-db-monitor
+        image: registry.dev.hbec.com/dba/hbec_db_monitor:1.1
+        ports:
+        - containerPort: 8080
+        env:
+        - name: HBEC_DBINSTANCE_TEST_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: hbec-db-monitor-st
+              key: dbpassword
+        envFrom:
+        - configMapRef:
+            name: hbec-db-monitor-cm
