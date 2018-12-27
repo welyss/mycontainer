@@ -4,7 +4,7 @@ metadata:
   name: hbec-db-monitor-srv
   namespace: dba
   labels:
-    hbec-db-monitor: LoadBalancer-Service
+    hbec-db-monitor: ClusterIP-Service
     hbec-metrics: prometheus
 spec:
   ports:
@@ -52,7 +52,7 @@ spec:
     spec:
       containers:
       - name: hbec-db-monitor
-        image: registry.dev.hbec.com/dba/hbec_db_monitor:1.1
+        image: registry.dev.hbec.com/dba/hbec_db_monitor:1.2
         ports:
         - containerPort: 8080
         env:
