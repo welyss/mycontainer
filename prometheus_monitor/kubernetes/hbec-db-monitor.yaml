@@ -52,7 +52,7 @@ spec:
     spec:
       containers:
       - name: hbec-db-monitor
-        image: registry.dev.hbec.com/dba/hbec_db_monitor:1.2
+        image: registry.dev.hbec.com/dba/hbec_db_monitor:1.4
         ports:
         - containerPort: 8080
         env:
