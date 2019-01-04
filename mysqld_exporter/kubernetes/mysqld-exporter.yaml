@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: dba
+  labels:
+    hbec-metrics: prometheus
+spec:
+  ports:
+  - name: http
+  - port: 8080
+  selector:
+    app: ${CLUSTER_NAME}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: dba
+data:
+  DATA_SOURCE_NAME: wuyushun:123123@(10.0.30.59:3306)/
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: ${CLUSTER_NAME}-dm
+  namespace: dba
+  labels:
+    app: ${CLUSTER_NAME}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${CLUSTER_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${CLUSTER_NAME}
+    spec:
+      containers:
+      - name: mysqld-exporter
+        image: registry.dev.hbec.com/dba/mysqld-exporter
+        command: ['/bin/mysqld_exporter', '--web.listen-address=:8080', '--web.telemetry-path=/hbec/metrics']
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: ${CLUSTER_NAME}-cm
+        resources:
+          limits:
+            cpu: 0.2
+            memory: 32Mi
