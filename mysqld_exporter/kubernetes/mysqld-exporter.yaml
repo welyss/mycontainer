@@ -8,14 +8,14 @@ metadata:
 spec:
   ports:
   - name: http
-  - port: 8080
+    port: 8080
   selector:
     app: ${CLUSTER_NAME}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: ${CLUSTER_NAME}
+  name: ${CLUSTER_NAME}-cm
   namespace: dba
 data:
   DATA_SOURCE_NAME: wuyushun:123123@(10.0.30.59:3306)/
@@ -50,3 +50,9 @@ spec:
           limits:
             cpu: 0.2
             memory: 32Mi
+        livenessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "netstat -nltp|grep 8080"]
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
