@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hbec-aliyun-exporter
+  namespace: dba
+  labels:
+    hbec-metrics: prometheus
+spec:
+  ports:
+  - name: http
+    port: 8080
+  selector:
+    app: hbec-aliyun-exporter
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hbec-aliyun-exporter-cm
+  namespace: dba
+data:
+  conf.yml: |
+    credential:
+      access_key_id: <YOUR_ACCESS_KEY_ID>
+      access_key_secret: <YOUR_ACCESS_KEY_SECRET>
+      region_id: cn-hangzhou
+
+    metrics:
+      acs_rds_dashboard:
+      - name: DiskUsage
+        rename: disk_usage
+        period: 60
+        measure: Average
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: hbec-aliyun-exporter
+  namespace: dba
+  labels:
+    app: hbec-aliyun-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hbec-aliyun-exporter
+  template:
+    metadata:
+      labels:
+        app: hbec-aliyun-exporter
+    spec:
+      containers:
+      - name: hbec-aliyun-exporter
+        image: registry.dev.hbec.com/dba/aliyun-exporter:0.3.0
+        args: ['-p 8080', '-c/etc/aliyun-exporter/conf.yml']
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: 0.5
+            memory: 256Mi
+        livenessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "netstat -nltp|grep 8080"]
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        volumeMounts:
+        - name: config-map-exporter
+          mountPath: /etc/aliyun-exporter
+      volumes:
+      - name: config-map-exporter
+        configMap:
+          name: hbec-aliyun-exporter-cm
