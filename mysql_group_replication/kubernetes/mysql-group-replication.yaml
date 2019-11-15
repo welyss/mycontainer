@@ -101,8 +101,11 @@ spec:
           name: mysql-gr
         resources:
           requests:
-            cpu: 500m
-            memory: 1Gi
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 300m
+            memory: 512Mi
         livenessProbe:
           exec:
             command: ["mysql", "-u", "root", "-e", "SELECT 1"]
